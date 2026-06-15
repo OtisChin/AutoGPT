@@ -438,7 +438,8 @@ export default function RedeemWorkspace() {
     setRecheckingItemId(itemId);
     setNotice(null);
     try {
-      await recheckRedeemItem(currentJob.id, itemId);
+      const job = await recheckRedeemItem(currentJob.id, itemId);
+      showJob(job);
       setNotice({ kind: "success", message: "已提交复检，正在刷新订单状态。" });
     } catch (error) {
       setNotice({
@@ -452,12 +453,39 @@ export default function RedeemWorkspace() {
 
   async function retryItem(itemId: string) {
     if (!currentJob || recheckingItemId) return;
+    const jobId = currentJob.id;
     setRecheckingItemId(itemId);
     setNotice(null);
+    setCurrentJob((job) =>
+      job
+        ? {
+            ...job,
+            status: "processing",
+            updatedAt: new Date().toISOString(),
+            items: job.items.map((item) =>
+              item.id === itemId
+                ? {
+                    ...item,
+                    status: "submitting_order",
+                    error: undefined,
+                    message: "正在重新提交",
+                    updatedAt: new Date().toISOString(),
+                  }
+                : item,
+            ),
+          }
+        : job,
+    );
     try {
-      await retryRedeemItem(currentJob.id, itemId);
+      const job = await retryRedeemItem(jobId, itemId);
+      showJob(job);
       setNotice({ kind: "success", message: "已重新提交，正在同步订单状态。" });
     } catch (error) {
+      try {
+        showJob(await getRedeemJob(jobId));
+      } catch {
+        // Keep the optimistic state until the live connection sends the latest job.
+      }
       setNotice({
         kind: "error",
         message: error instanceof Error ? error.message : "重试失败，请稍后再试。",
@@ -499,7 +527,8 @@ export default function RedeemWorkspace() {
     setReplacementError(null);
     setNotice(null);
     try {
-      await resubmitRedeemItem(currentJob.id, itemId, accessToken);
+      const job = await resubmitRedeemItem(currentJob.id, itemId, accessToken);
+      showJob(job);
       setReplacementTokens((current) => {
         const next = { ...current };
         delete next[itemId];
