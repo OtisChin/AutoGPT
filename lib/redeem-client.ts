@@ -2,6 +2,7 @@ import type {
   CreateRedeemRequest,
   CreateRedeemResponse,
   RedeemJob,
+  ValidateCdksResponse,
 } from "./contracts";
 import { BACKEND_API_BASE_URL } from "./contracts";
 import { requestJson } from "./http-client";
@@ -33,6 +34,15 @@ export async function createRedeemJob(
     },
     body: JSON.stringify(payload),
     signal,
+  });
+}
+
+export async function validateRedeemCdks(cdks: string[]): Promise<ValidateCdksResponse> {
+  const baseUrl = requireBackendUrl();
+  return requestJson<ValidateCdksResponse>(`${baseUrl}/redeem/validate-cdks`, {
+    method: "POST",
+    credentials: "include",
+    body: JSON.stringify({ cdks }),
   });
 }
 

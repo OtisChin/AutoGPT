@@ -44,13 +44,14 @@ import {
   resubmitRedeemItem,
   retryRedeemItem,
   subscribeRedeemJob,
+  validateRedeemCdks,
 } from "../../lib/redeem-client";
 
 type Step = "cdk" | "token" | "queue";
 type Notice = { kind: "error" | "success" | "info"; message: string } | null;
 
 const MAX_CODES = 10;
-const CDK_PATTERN = /^[A-Z0-9][A-Z0-9_-]{5,63}$/i;
+const CDK_PATTERN = /^UPI-PLUS-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/i;
 const LAST_JOB_STORAGE_KEY = "autogpt-redeem:last-job-id";
 
 function parseCodes(value: string) {
@@ -152,6 +153,7 @@ export default function RedeemWorkspace() {
   const [rawCodes, setRawCodes] = useState("");
   const [tokens, setTokens] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<Notice>(null);
+  const [checkingCdks, setCheckingCdks] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [currentJob, setCurrentJob] = useState<RedeemJob | null>(null);
   const [liveError, setLiveError] = useState(false);
@@ -311,7 +313,9 @@ export default function RedeemWorkspace() {
     };
   }, [replacementItemId, recheckingItemId]);
 
-  function continueToTokens() {
+  async function continueToTokens() {
+    if (checkingCdks) return;
+
     if (codes.length === 0) {
       setNotice({ kind: "error", message: "请先输入至少一个 CDK。" });
       return;
@@ -334,15 +338,54 @@ export default function RedeemWorkspace() {
       return;
     }
 
+    setCheckingCdks(true);
+    setNotice({ kind: "info", message: "正在校验 CDK 是否可用。" });
+    let okCodes: string[] = [];
+    let badResults: Array<{ cdk: string; message?: string }> = [];
+    try {
+      const response = await validateRedeemCdks(codes);
+      okCodes = response.results
+        .filter((item) => item.valid)
+        .map((item) => item.cdk);
+      badResults = response.results
+        .filter((item) => !item.valid)
+        .map((item) => ({ cdk: item.cdk, message: item.message }));
+    } catch (error) {
+      setNotice({
+        kind: error instanceof RedeemApiUnavailableError ? "info" : "error",
+        message:
+          error instanceof Error ? error.message : "CDK 校验失败，请稍后重试。",
+      });
+      setCheckingCdks(false);
+      return;
+    }
+
+    if (okCodes.length === 0) {
+      const reason = badResults
+        .slice(0, 2)
+        .map((item) => `${item.cdk}${item.message ? `（${item.message}）` : ""}`)
+        .join("、");
+      setNotice({
+        kind: "error",
+        message: reason ? `无可用 CDK：${reason}` : "无可用 CDK。",
+      });
+      setCheckingCdks(false);
+      return;
+    }
+
+    setRawCodes(okCodes.join("\n"));
     setTokens((current) =>
-      Object.fromEntries(codes.map((code) => [code, current[code] ?? ""])),
+      Object.fromEntries(okCodes.map((code) => [code, current[code] ?? ""])),
     );
     setLiveError(false);
     setNotice({
-      kind: "success",
-      message: `已完成本地格式校验，共 ${codes.length} 个 CDK。`,
+      kind: badResults.length > 0 ? "info" : "success",
+      message:
+        `已校验 ${okCodes.length} 个 CDK 可用。` +
+        (badResults.length > 0 ? `已忽略 ${badResults.length} 个无效 CDK。` : ""),
     });
     setStep("token");
+    setCheckingCdks(false);
   }
 
   async function submit(event: FormEvent) {
@@ -597,15 +640,20 @@ export default function RedeemWorkspace() {
                     <TicketCheck size={15} />
                     自动去重，已识别 {codes.length} 个
                   </span>
-                  <span>有效格式 {validCodeCount} 个</span>
+                  <span>符合格式 {validCodeCount} 个</span>
                 </div>
                 <button
                   className="primary-button redeem-primary-action"
                   type="button"
                   onClick={continueToTokens}
+                  disabled={checkingCdks}
                 >
-                  继续
-                  <ArrowRight size={18} />
+                  {checkingCdks ? (
+                    <LoaderCircle className="spin" size={18} />
+                  ) : (
+                    <ArrowRight size={18} />
+                  )}
+                  {checkingCdks ? "校验中" : "继续"}
                 </button>
               </div>
             ) : step === "token" ? (

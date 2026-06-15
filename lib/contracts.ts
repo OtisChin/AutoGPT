@@ -23,6 +23,14 @@ export type CreateRedeemRequest = {
   idempotencyKey: string;
 };
 
+export type ValidateCdksResponse = {
+  results: Array<{
+    cdk: string;
+    valid: boolean;
+    message?: string;
+  }>;
+};
+
 export type RedeemJobStatus =
   | "queued"
   | "validating"
