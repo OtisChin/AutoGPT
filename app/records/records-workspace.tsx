@@ -10,6 +10,7 @@ import {
   listRedeemRecords,
   RecordsBackendUnavailableError,
 } from "../../lib/records-client";
+import { isAbortError } from "../../lib/http-client";
 
 export default function RecordsWorkspace() {
   const { status } = useAuth();
@@ -24,6 +25,7 @@ export default function RecordsWorkspace() {
       const response = await listRedeemRecords(signal);
       setRecords(response.records);
     } catch (error) {
+      if (signal?.aborted || isAbortError(error)) return;
       setRecords([]);
       setMessage(
         error instanceof RecordsBackendUnavailableError || error instanceof Error
@@ -31,7 +33,7 @@ export default function RecordsWorkspace() {
           : "兑换记录加载失败。",
       );
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }
 

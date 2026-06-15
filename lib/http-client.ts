@@ -10,6 +10,14 @@ export class ApiError extends Error {
   }
 }
 
+export function isAbortError(error: unknown) {
+  return (
+    (error instanceof DOMException && error.name === "AbortError") ||
+    (error instanceof Error &&
+      error.message.toLowerCase().includes("aborted"))
+  );
+}
+
 export async function requestJson<T>(
   url: string,
   init: RequestInit = {},

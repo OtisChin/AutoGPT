@@ -14,6 +14,7 @@ import {
   Send,
   ShieldCheck,
   TicketCheck,
+  X,
 } from "lucide-react";
 import Link from "next/link";
 import {
@@ -32,6 +33,7 @@ import type {
   RedeemJobStatus,
   RedeemRecord,
 } from "../../lib/contracts";
+import { isAbortError } from "../../lib/http-client";
 import { listRedeemRecords } from "../../lib/records-client";
 import {
   createRedeemJob,
@@ -139,6 +141,11 @@ function canReplaceToken(status: RedeemItemStatus) {
   return ["failed", "expired"].includes(status);
 }
 
+function activeJobText(job: RedeemJob) {
+  const done = job.items.filter((item) => isTerminalItem(item.status)).length;
+  return `${jobStatusLabel(job.status)} · ${done}/${job.items.length} 个任务项`;
+}
+
 export default function RedeemWorkspace() {
   const { status: authStatus } = useAuth();
   const [step, setStep] = useState<Step>("cdk");
@@ -149,6 +156,8 @@ export default function RedeemWorkspace() {
   const [currentJob, setCurrentJob] = useState<RedeemJob | null>(null);
   const [liveError, setLiveError] = useState(false);
   const [recheckingItemId, setRecheckingItemId] = useState<string | null>(null);
+  const [replacementItemId, setReplacementItemId] = useState<string | null>(null);
+  const [replacementError, setReplacementError] = useState<string | null>(null);
   const [replacementTokens, setReplacementTokens] = useState<Record<string, string>>(
     {},
   );
@@ -173,12 +182,13 @@ export default function RedeemWorkspace() {
       const response = await listRedeemRecords(signal);
       setRecords(response.records);
     } catch (error) {
+      if (signal?.aborted || isAbortError(error)) return;
       setRecords([]);
       setRecordsMessage(
         error instanceof Error ? error.message : "兑换记录加载失败。",
       );
     } finally {
-      setRecordsLoading(false);
+      if (!signal?.aborted) setRecordsLoading(false);
     }
   }, [authStatus]);
 
@@ -210,7 +220,6 @@ export default function RedeemWorkspace() {
     if (currentJob || restoreAttemptedRef.current) return;
 
     let cancelled = false;
-    restoreAttemptedRef.current = true;
     setRestoringJob(true);
 
     async function restoreJob() {
@@ -231,7 +240,10 @@ export default function RedeemWorkspace() {
           if (!cancelled) setStep("cdk");
         }
       } finally {
-        if (!cancelled) setRestoringJob(false);
+        if (!cancelled) {
+          restoreAttemptedRef.current = true;
+          setRestoringJob(false);
+        }
       }
     }
 
@@ -274,6 +286,31 @@ export default function RedeemWorkspace() {
     };
   }, [currentJob?.id]);
 
+  useEffect(() => {
+    if (!replacementItemId) return;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    function handleKeyDown(event: KeyboardEvent) {
+      const itemId = replacementItemId;
+      if (event.key !== "Escape" || !itemId || recheckingItemId === itemId) return;
+      setReplacementItemId(null);
+      setReplacementError(null);
+      setReplacementTokens((current) => {
+        const next = { ...current };
+        delete next[itemId];
+        return next;
+      });
+    }
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [replacementItemId, recheckingItemId]);
+
   function continueToTokens() {
     if (codes.length === 0) {
       setNotice({ kind: "error", message: "请先输入至少一个 CDK。" });
@@ -300,11 +337,7 @@ export default function RedeemWorkspace() {
     setTokens((current) =>
       Object.fromEntries(codes.map((code) => [code, current[code] ?? ""])),
     );
-    setCurrentJob(null);
     setLiveError(false);
-    if (typeof window !== "undefined") {
-      window.localStorage.removeItem(LAST_JOB_STORAGE_KEY);
-    }
     setNotice({
       kind: "success",
       message: `已完成本地格式校验，共 ${codes.length} 个 CDK。`,
@@ -391,15 +424,36 @@ export default function RedeemWorkspace() {
     }
   }
 
+  function openReplacementDialog(itemId: string) {
+    setReplacementItemId(itemId);
+    setReplacementError(null);
+    setNotice(null);
+  }
+
+  function closeReplacementDialog() {
+    if (replacementItemId && recheckingItemId === replacementItemId) return;
+    const itemId = replacementItemId;
+    setReplacementItemId(null);
+    setReplacementError(null);
+    if (itemId) {
+      setReplacementTokens((current) => {
+        const next = { ...current };
+        delete next[itemId];
+        return next;
+      });
+    }
+  }
+
   async function resubmitWithToken(itemId: string) {
     if (!currentJob || recheckingItemId) return;
     const accessToken = (replacementTokens[itemId] ?? "").trim();
     if (accessToken.length < 20) {
-      setNotice({ kind: "error", message: "请先粘贴新的 access token。" });
+      setReplacementError("请先粘贴新的 access token。");
       return;
     }
 
     setRecheckingItemId(itemId);
+    setReplacementError(null);
     setNotice(null);
     try {
       await resubmitRedeemItem(currentJob.id, itemId, accessToken);
@@ -408,17 +462,20 @@ export default function RedeemWorkspace() {
         delete next[itemId];
         return next;
       });
+      setReplacementItemId(null);
+      setReplacementError(null);
       setNotice({ kind: "success", message: "已使用新 Token 重新提交。" });
     } catch (error) {
-      setNotice({
-        kind: "error",
-        message:
-          error instanceof Error ? error.message : "更换 Token 失败，请稍后再试。",
-      });
+      setReplacementError(
+        error instanceof Error ? error.message : "更换 Token 失败，请稍后再试。",
+      );
     } finally {
       setRecheckingItemId(null);
     }
   }
+
+  const replacementItem =
+    currentJob?.items.find((item) => item.id === replacementItemId) ?? null;
 
   return (
     <div className="site-shell">
@@ -492,6 +549,23 @@ export default function RedeemWorkspace() {
                 <small>所有任务按后端调度策略统一排队处理</small>
               </div>
             </div>
+
+            {currentJob && step !== "queue" && (
+              <div className="active-task-strip" role="status">
+                <div>
+                  <strong>当前任务仍在同步</strong>
+                  <small>{activeJobText(currentJob)}</small>
+                </div>
+                <button
+                  className="secondary-button compact-button"
+                  type="button"
+                  onClick={() => setStep("queue")}
+                >
+                  返回当前任务
+                  <ArrowRight size={16} />
+                </button>
+              </div>
+            )}
 
             {restoringJob ? (
               <div className="queue-state">
@@ -610,7 +684,17 @@ export default function RedeemWorkspace() {
                 </div>
 
                 <div className="live-job-list">
-                  {(currentJob?.items ?? []).map((item) => (
+                  {(currentJob?.items ?? []).map((item) => {
+                    const displayMessage =
+                      item.error || (item.message && item.status !== "succeeded")
+                        ? itemDisplayMessage(item)
+                        : "";
+                    const hasItemActions =
+                      canRecheckItem(item.status, item.upstreamOrderId) ||
+                      canRetryItem(item.status, item.upstreamOrderId) ||
+                      canReplaceToken(item.status);
+
+                    return (
                     <article className="live-item" key={item.id}>
                       <div className="live-item-main">
                         <span
@@ -625,80 +709,66 @@ export default function RedeemWorkspace() {
                             ? ` · 订单 ${item.upstreamOrderId}`
                             : " · 等待订单创建"}
                         </small>
+                        {displayMessage && (
+                          <p className="live-item-message">{displayMessage}</p>
+                        )}
                       </div>
                       <div className="live-item-meta">
                         {item.plan && <span>{planLabel(item.plan)}</span>}
-                        {(item.error ||
-                          (item.message && item.status !== "succeeded")) && (
-                          <p>{itemDisplayMessage(item)}</p>
-                        )}
-                        {canRecheckItem(item.status, item.upstreamOrderId) && (
-                          <button
-                            className="secondary-button compact-button"
-                            type="button"
-                            onClick={() => recheckItem(item.id)}
-                            disabled={recheckingItemId === item.id}
-                          >
-                            {recheckingItemId === item.id ? (
-                              <LoaderCircle className="spin" size={16} />
-                            ) : (
-                              <RefreshCw size={16} />
+                        {hasItemActions && (
+                          <div className="live-item-actions">
+                            {canRecheckItem(item.status, item.upstreamOrderId) && (
+                              <button
+                                className="secondary-button compact-button"
+                                type="button"
+                                onClick={() => recheckItem(item.id)}
+                                disabled={recheckingItemId === item.id}
+                              >
+                                {recheckingItemId === item.id ? (
+                                  <LoaderCircle className="spin" size={16} />
+                                ) : (
+                                  <RefreshCw size={16} />
+                                )}
+                                复检
+                              </button>
                             )}
-                            复检
-                          </button>
-                        )}
-                        {canRetryItem(item.status, item.upstreamOrderId) && (
-                          <button
-                            className="secondary-button compact-button"
-                            type="button"
-                            onClick={() => retryItem(item.id)}
-                            disabled={recheckingItemId === item.id}
-                          >
-                            {recheckingItemId === item.id ? (
-                              <LoaderCircle className="spin" size={16} />
-                            ) : (
-                              <RefreshCw size={16} />
+                            {canRetryItem(item.status, item.upstreamOrderId) && (
+                              <button
+                                className="secondary-button compact-button"
+                                type="button"
+                                onClick={() => retryItem(item.id)}
+                                disabled={recheckingItemId === item.id}
+                              >
+                                {recheckingItemId === item.id ? (
+                                  <LoaderCircle className="spin" size={16} />
+                                ) : (
+                                  <RefreshCw size={16} />
+                                )}
+                                重试
+                              </button>
                             )}
-                            重试
-                          </button>
-                        )}
-                        {canReplaceToken(item.status) && (
-                          <span className="replacement-token">
-                            <KeyRound size={15} />
-                            <input
-                              type="password"
-                              value={replacementTokens[item.id] ?? ""}
-                              onChange={(event) =>
-                                setReplacementTokens((current) => ({
-                                  ...current,
-                                  [item.id]: event.target.value,
-                                }))
-                              }
-                              placeholder="新的 access token"
-                              autoComplete="off"
-                              aria-label={`${item.cdk} 的新 access token`}
-                            />
-                            <button
-                              className="secondary-button compact-button"
-                              type="button"
-                              onClick={() => resubmitWithToken(item.id)}
-                              disabled={recheckingItemId === item.id}
-                            >
-                              {recheckingItemId === item.id ? (
-                                <LoaderCircle className="spin" size={16} />
-                              ) : (
+                            {canReplaceToken(item.status) && (
+                              <button
+                                className="secondary-button compact-button"
+                                type="button"
+                                onClick={() => openReplacementDialog(item.id)}
+                                disabled={recheckingItemId === item.id}
+                              >
                                 <Send size={16} />
-                              )}
-                              更换 Token
-                            </button>
-                          </span>
+                                更换 Token
+                              </button>
+                            )}
+                          </div>
                         )}
                         {!item.upstreamOrderId && isTerminalItem(item.status) && (
-                          <span>可更换 Token 后重新提交</span>
+                          <span className="live-item-action-note">
+                            可更换 Token 后重新提交
+                          </span>
                         )}
                       </div>
                     </article>
-                  ))}
+                    );
+                  })}
                 </div>
 
                 <div className="live-job-actions">
@@ -707,12 +777,10 @@ export default function RedeemWorkspace() {
                     type="button"
                     onClick={() => {
                       setStep("cdk");
-                      setCurrentJob(null);
+                      setRawCodes("");
+                      setTokens({});
                       setNotice(null);
                       restoreAttemptedRef.current = true;
-                      if (typeof window !== "undefined") {
-                        window.localStorage.removeItem(LAST_JOB_STORAGE_KEY);
-                      }
                     }}
                   >
                     <ArrowLeft size={18} />
@@ -744,6 +812,10 @@ export default function RedeemWorkspace() {
             <div className="process-heading">
               <span>PROCESS</span>
               <h2 id="process-title">兑换流程</h2>
+            </div>
+            <div className="process-note">
+              <ShieldCheck size={18} aria-hidden="true" />
+              <p>推荐使用手机号注册ChatGPT账号，激活Plus成功之后，再绑定邮箱。</p>
             </div>
             <ol>
               <li>
@@ -853,6 +925,104 @@ export default function RedeemWorkspace() {
         <span>AutoGPT REDEEM</span>
         <span>CDK 有效期以购买说明为准，请及时使用</span>
       </footer>
+
+      {replacementItem && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeReplacementDialog();
+          }}
+        >
+          <section
+            className="token-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="token-modal-title"
+          >
+            <div className="token-modal-heading">
+              <div>
+                <span className="panel-kicker">REPLACE TOKEN</span>
+                <h2 id="token-modal-title">更换 Access Token</h2>
+              </div>
+              <button
+                className="icon-button"
+                type="button"
+                onClick={closeReplacementDialog}
+                disabled={recheckingItemId === replacementItem.id}
+                aria-label="关闭更换 Token 弹窗"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="token-modal-target">
+              <span className={`status-pill ${itemStatusTone(replacementItem.status)}`}>
+                {itemStatusLabel(replacementItem.status)}
+              </span>
+              <strong title={replacementItem.cdk}>{replacementItem.cdk}</strong>
+              {itemDisplayMessage(replacementItem) && (
+                <small>{itemDisplayMessage(replacementItem)}</small>
+              )}
+            </div>
+
+            <form
+              className="token-modal-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void resubmitWithToken(replacementItem.id);
+              }}
+            >
+              <label htmlFor="replacement-token-input">新的 access token</label>
+              <div className="replacement-token-field">
+                <KeyRound size={17} />
+                <input
+                  id="replacement-token-input"
+                  type="password"
+                  value={replacementTokens[replacementItem.id] ?? ""}
+                  onChange={(event) => {
+                    setReplacementError(null);
+                    setReplacementTokens((current) => ({
+                      ...current,
+                      [replacementItem.id]: event.target.value,
+                    }));
+                  }}
+                  placeholder="粘贴新的 access token"
+                  autoComplete="off"
+                  autoFocus
+                />
+              </div>
+              {replacementError && (
+                <p className="token-modal-error" role="alert">
+                  {replacementError}
+                </p>
+              )}
+              <div className="token-modal-actions">
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={closeReplacementDialog}
+                  disabled={recheckingItemId === replacementItem.id}
+                >
+                  取消
+                </button>
+                <button
+                  className="primary-button"
+                  type="submit"
+                  disabled={recheckingItemId === replacementItem.id}
+                >
+                  {recheckingItemId === replacementItem.id ? (
+                    <LoaderCircle className="spin" size={18} />
+                  ) : (
+                    <Send size={18} />
+                  )}
+                  确认更换
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
+      )}
     </div>
   );
 }
