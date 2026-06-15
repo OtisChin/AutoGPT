@@ -39,6 +39,8 @@ import {
   getRedeemJob,
   recheckRedeemItem,
   RedeemApiUnavailableError,
+  resubmitRedeemItem,
+  retryRedeemItem,
   subscribeRedeemJob,
 } from "../../lib/redeem-client";
 
@@ -107,6 +109,13 @@ function taskMessage(message: string) {
   return message;
 }
 
+function itemDisplayMessage(item: RedeemJob["items"][number]) {
+  if (item.status === "succeeded") {
+    return "ChatGPT Plus 兑换成功";
+  }
+  return taskMessage(item.error || item.message || "");
+}
+
 function itemStatusTone(status: RedeemItemStatus) {
   if (status === "succeeded") return "success";
   if (["failed", "expired", "cdk_invalid"].includes(status)) return "error";
@@ -116,6 +125,18 @@ function itemStatusTone(status: RedeemItemStatus) {
 
 function isTerminalItem(status: RedeemItemStatus) {
   return ["succeeded", "failed", "expired", "cdk_invalid"].includes(status);
+}
+
+function canRecheckItem(status: RedeemItemStatus, upstreamOrderId?: string) {
+  return Boolean(upstreamOrderId) && ["awaiting_scan", "scanned"].includes(status);
+}
+
+function canRetryItem(status: RedeemItemStatus, upstreamOrderId?: string) {
+  return Boolean(upstreamOrderId) && ["failed", "expired"].includes(status);
+}
+
+function canReplaceToken(status: RedeemItemStatus) {
+  return ["failed", "expired"].includes(status);
 }
 
 export default function RedeemWorkspace() {
@@ -128,6 +149,9 @@ export default function RedeemWorkspace() {
   const [currentJob, setCurrentJob] = useState<RedeemJob | null>(null);
   const [liveError, setLiveError] = useState(false);
   const [recheckingItemId, setRecheckingItemId] = useState<string | null>(null);
+  const [replacementTokens, setReplacementTokens] = useState<Record<string, string>>(
+    {},
+  );
   const [records, setRecords] = useState<RedeemRecord[]>([]);
   const [recordsLoading, setRecordsLoading] = useState(false);
   const [recordsMessage, setRecordsMessage] = useState<string | null>(null);
@@ -343,7 +367,53 @@ export default function RedeemWorkspace() {
     } catch (error) {
       setNotice({
         kind: "error",
-        message: error instanceof Error ? error.message : "复检失败，请稍后重试。",
+        message: error instanceof Error ? error.message : "复检失败，请稍后再试。",
+      });
+    } finally {
+      setRecheckingItemId(null);
+    }
+  }
+
+  async function retryItem(itemId: string) {
+    if (!currentJob || recheckingItemId) return;
+    setRecheckingItemId(itemId);
+    setNotice(null);
+    try {
+      await retryRedeemItem(currentJob.id, itemId);
+      setNotice({ kind: "success", message: "已重新提交，正在同步订单状态。" });
+    } catch (error) {
+      setNotice({
+        kind: "error",
+        message: error instanceof Error ? error.message : "重试失败，请稍后再试。",
+      });
+    } finally {
+      setRecheckingItemId(null);
+    }
+  }
+
+  async function resubmitWithToken(itemId: string) {
+    if (!currentJob || recheckingItemId) return;
+    const accessToken = (replacementTokens[itemId] ?? "").trim();
+    if (accessToken.length < 20) {
+      setNotice({ kind: "error", message: "请先粘贴新的 access token。" });
+      return;
+    }
+
+    setRecheckingItemId(itemId);
+    setNotice(null);
+    try {
+      await resubmitRedeemItem(currentJob.id, itemId, accessToken);
+      setReplacementTokens((current) => {
+        const next = { ...current };
+        delete next[itemId];
+        return next;
+      });
+      setNotice({ kind: "success", message: "已使用新 Token 重新提交。" });
+    } catch (error) {
+      setNotice({
+        kind: "error",
+        message:
+          error instanceof Error ? error.message : "更换 Token 失败，请稍后再试。",
       });
     } finally {
       setRecheckingItemId(null);
@@ -558,10 +628,11 @@ export default function RedeemWorkspace() {
                       </div>
                       <div className="live-item-meta">
                         {item.plan && <span>{planLabel(item.plan)}</span>}
-                        {(item.error || item.message) && (
-                          <p>{taskMessage(item.error || item.message || "")}</p>
+                        {(item.error ||
+                          (item.message && item.status !== "succeeded")) && (
+                          <p>{itemDisplayMessage(item)}</p>
                         )}
-                        {item.upstreamOrderId && !isTerminalItem(item.status) && (
+                        {canRecheckItem(item.status, item.upstreamOrderId) && (
                           <button
                             className="secondary-button compact-button"
                             type="button"
@@ -575,6 +646,55 @@ export default function RedeemWorkspace() {
                             )}
                             复检
                           </button>
+                        )}
+                        {canRetryItem(item.status, item.upstreamOrderId) && (
+                          <button
+                            className="secondary-button compact-button"
+                            type="button"
+                            onClick={() => retryItem(item.id)}
+                            disabled={recheckingItemId === item.id}
+                          >
+                            {recheckingItemId === item.id ? (
+                              <LoaderCircle className="spin" size={16} />
+                            ) : (
+                              <RefreshCw size={16} />
+                            )}
+                            重试
+                          </button>
+                        )}
+                        {canReplaceToken(item.status) && (
+                          <span className="replacement-token">
+                            <KeyRound size={15} />
+                            <input
+                              type="password"
+                              value={replacementTokens[item.id] ?? ""}
+                              onChange={(event) =>
+                                setReplacementTokens((current) => ({
+                                  ...current,
+                                  [item.id]: event.target.value,
+                                }))
+                              }
+                              placeholder="新的 access token"
+                              autoComplete="off"
+                              aria-label={`${item.cdk} 的新 access token`}
+                            />
+                            <button
+                              className="secondary-button compact-button"
+                              type="button"
+                              onClick={() => resubmitWithToken(item.id)}
+                              disabled={recheckingItemId === item.id}
+                            >
+                              {recheckingItemId === item.id ? (
+                                <LoaderCircle className="spin" size={16} />
+                              ) : (
+                                <Send size={16} />
+                              )}
+                              更换 Token
+                            </button>
+                          </span>
+                        )}
+                        {!item.upstreamOrderId && isTerminalItem(item.status) && (
+                          <span>可更换 Token 后重新提交</span>
                         )}
                       </div>
                     </article>

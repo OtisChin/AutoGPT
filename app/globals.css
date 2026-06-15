@@ -936,6 +936,32 @@ textarea:focus {
   font-size: 13px;
 }
 
+.replacement-token {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 4px 4px 4px 11px;
+  color: #728078;
+  background: #ffffff;
+  border: 1px solid #d7e4db;
+  border-radius: 14px;
+}
+
+.replacement-token:focus-within {
+  border-color: var(--green-strong);
+  box-shadow: 0 0 0 4px rgba(15, 200, 120, 0.12);
+}
+
+.replacement-token input {
+  min-width: 190px;
+  color: var(--panel-ink);
+  background: transparent;
+  border: 0;
+  outline: 0;
+  font-size: 13px;
+}
+
 .structured-result {
   display: flex;
   flex-direction: column;
@@ -1535,6 +1561,15 @@ footer a {
 
   .live-item-meta p {
     max-width: none;
+  }
+
+  .replacement-token {
+    width: 100%;
+  }
+
+  .replacement-token input {
+    min-width: 0;
+    flex: 1;
   }
 
   .live-job-actions .primary-button,

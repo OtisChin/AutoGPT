@@ -64,6 +64,36 @@ export async function recheckRedeemItem(
   );
 }
 
+export async function retryRedeemItem(
+  jobId: string,
+  itemId: string,
+): Promise<{ ok: true }> {
+  const baseUrl = requireBackendUrl();
+  return requestJson<{ ok: true }>(
+    `${baseUrl}/redeem/${jobId}/items/${itemId}/retry`,
+    {
+      method: "POST",
+      credentials: "include",
+    },
+  );
+}
+
+export async function resubmitRedeemItem(
+  jobId: string,
+  itemId: string,
+  accessToken: string,
+): Promise<{ ok: true }> {
+  const baseUrl = requireBackendUrl();
+  return requestJson<{ ok: true }>(
+    `${baseUrl}/redeem/${jobId}/items/${itemId}/resubmit`,
+    {
+      method: "POST",
+      credentials: "include",
+      body: JSON.stringify({ accessToken }),
+    },
+  );
+}
+
 export function subscribeRedeemJob(
   jobId: string,
   onJob: (job: RedeemJob) => void,
