@@ -51,7 +51,7 @@ type Step = "cdk" | "token" | "queue";
 type Notice = { kind: "error" | "success" | "info"; message: string } | null;
 
 const MAX_CODES = 10;
-const CDK_PATTERN = /^UPI-PLUS-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/i;
+const CDK_PATTERN = /^CRUSH-PLUS-UPI-[A-Z0-9]{9}$/i;
 const LAST_JOB_STORAGE_KEY = "autogpt-redeem:last-job-id";
 
 function parseCodes(value: string) {
@@ -333,7 +333,7 @@ export default function RedeemWorkspace() {
     if (invalid.length > 0) {
       setNotice({
         kind: "error",
-        message: `以下 CDK 格式不正确：${invalid.slice(0, 2).join("、")}`,
+        message: `以下 CDK 格式不正确，应为 CRUSH-PLUS-UPI-XXXXXXXXX：${invalid.slice(0, 2).join("、")}`,
       });
       return;
     }
@@ -660,7 +660,9 @@ export default function RedeemWorkspace() {
                     setRawCodes(event.target.value);
                     setNotice(null);
                   }}
-                  placeholder={"每行输入一个 CDK\n也支持空格、逗号或分号分隔"}
+                  placeholder={
+                    "CRUSH-PLUS-UPI-XXXXXXXXX\n每行输入一个，也支持空格、逗号或分号分隔"
+                  }
                   spellCheck={false}
                   autoComplete="off"
                 />
